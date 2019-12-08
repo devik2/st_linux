@@ -1333,10 +1333,33 @@ _clk_stm32_register_composite(struct device *dev,
  *
  */
 
+#define MP1_SECURE 0
+
 #define STM32_SVC_RCC	0x82001000
 #define STM32_WRITE	0x1
 #define STM32_SET_BITS	0x2
 #define STM32_CLR_BITS	0x3
+
+#if ! MP1_SECURE
+#undef arm_smccc_smc
+#define arm_smccc_smc loc__arm_smccc_smc
+static void __iomem *rcc_base;
+static void loc__arm_smccc_smc(u32 cls, u32 op, u32 addr, u32 val, 
+		u32 t1, u32 t2, u32 t3, u32 t4, struct arm_smccc_res *res)
+{
+	u32 old;
+	/* in this file cls is always STM32_SVC_RCC */
+	res->a0 = 0;
+	printk("smc clk write %X <= %X\n",addr,val);
+	if (op == STM32_WRITE) {
+		writel_relaxed(val, rcc_base + addr);
+		return;
+	}
+	old = readl_relaxed(rcc_base + addr);
+	if (op == STM32_SET_BITS) writel_relaxed(old|val, rcc_base + addr);
+	if (op == STM32_CLR_BITS) writel_relaxed(old&~val, rcc_base + addr);
+}
+#endif
 
 #define SMC(class, op, address, val)\
 	({\

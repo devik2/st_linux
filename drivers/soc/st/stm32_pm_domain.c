@@ -23,7 +23,7 @@
 
 #define STM32_SMC_PD_DOMAIN_ON	0
 #define STM32_SMC_PD_DOMAIN_OFF	1
-
+#define DEBUG 1
 struct stm32_pm_domain {
 	struct device *dev;
 	struct generic_pm_domain genpd;
@@ -36,7 +36,7 @@ static int stm32_pd_power_off(struct generic_pm_domain *domain)
 						    struct stm32_pm_domain,
 						    genpd);
 
-	SMC(priv->id, STM32_SMC_PD_DOMAIN_OFF);
+	//SMC(priv->id, STM32_SMC_PD_DOMAIN_OFF);
 
 	dev_dbg(priv->dev, "%s OFF\n", domain->name);
 
@@ -49,7 +49,7 @@ static int stm32_pd_power_on(struct generic_pm_domain *domain)
 						    struct stm32_pm_domain,
 						    genpd);
 
-	SMC(priv->id, STM32_SMC_PD_DOMAIN_ON);
+	//SMC(priv->id, STM32_SMC_PD_DOMAIN_ON);
 
 	dev_dbg(priv->dev, "%s ON\n", domain->name);
 

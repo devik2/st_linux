@@ -41,6 +41,28 @@ enum wkup_pull_setting {
 	WKUP_PULL_RESERVED
 };
 
+#define MP1_SECURE 0
+#if ! MP1_SECURE
+#undef arm_smccc_smc
+#define arm_smccc_smc loc__arm_smccc_smc
+static void __iomem *pwr_base;
+static void loc__arm_smccc_smc(u32 cls, u32 op, u32 addr, u32 val, 
+		u32 t1, u32 t2, u32 t3, u32 t4, struct arm_smccc_res *res)
+{
+	u32 old;
+	/* in this file cls is always STM32_SVC_PWR */
+	res->a0 = 0;
+	addr -= SMC_PWR_BASE;
+	if (op == STM32_WRITE) {
+		writel_relaxed(val, pwr_base+addr);
+		return;
+	}
+	old = readl_relaxed(pwr_base + addr);
+	if (op == STM32_SET_BITS) writel_relaxed(old|val, pwr_base + addr);
+	if (op == STM32_CLEAR_BITS) writel_relaxed(old&~val, pwr_base + addr);
+}
+#endif
+
 #define SMC(class, op, offset, val) do {			\
 	struct arm_smccc_res res;				\
 	arm_smccc_smc(class, op, SMC_PWR_BASE + (offset), val,	\
@@ -324,6 +346,7 @@ static int stm32_pwr_probe(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	priv->base = devm_ioremap_resource(dev, res);
+	pwr_base = priv->base;
 	if (IS_ERR(priv->base)) {
 		dev_err(dev, "Unable to map registers\n");
 		return PTR_ERR(priv->base);
