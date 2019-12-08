@@ -309,6 +309,7 @@ struct stm32f7_i2c_msg {
  * @regmap_smask: mask for Fast Mode Plus bits in set register
  * @regmap_creg: register address for setting Fast Mode Plus bits
  * @regmap_cmask: mask for Fast Mode Plus bits in set register
+ * @is_suspended: boolean to know if the driver has been suspended
  */
 struct stm32f7_i2c_dev {
 	struct i2c_adapter adap;
@@ -338,6 +339,7 @@ struct stm32f7_i2c_dev {
 	u32 regmap_smask;
 	u32 regmap_creg;
 	u32 regmap_cmask;
+	bool is_suspended;
 };
 
 /**
@@ -1302,8 +1304,8 @@ static int stm32f7_i2c_get_free_slave_id(struct stm32f7_i2c_dev *i2c_dev,
 	 * slave[0] supports 7-bit and 10-bit slave address
 	 * slave[1] supports 7-bit slave address only
 	 */
-	for (i = 0; i < STM32F7_I2C_MAX_SLAVE; i++) {
-		if (i == 1 && (slave->flags & I2C_CLIENT_PEC))
+	for (i = STM32F7_I2C_MAX_SLAVE - 1; i >= 0; i--) {
+		if (i == 1 && (slave->flags & I2C_CLIENT_TEN))
 			continue;
 		if (!i2c_dev->slave[i]) {
 			*id = i;
@@ -1593,6 +1595,9 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
 	unsigned long time_left;
 	int ret;
 
+	if (i2c_dev->is_suspended)
+		return -EBUSY;
+
 	i2c_dev->msg = msgs;
 	i2c_dev->msg_num = num;
 	i2c_dev->msg_id = 0;
@@ -1638,6 +1643,9 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 	struct device *dev = i2c_dev->dev;
 	unsigned long timeout;
 	int i, ret;
+
+	if (i2c_dev->is_suspended)
+		return -EBUSY;
 
 	f7_msg->addr = addr;
 	f7_msg->size = size;
@@ -1946,19 +1954,19 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
 	phy_addr = (dma_addr_t)res->start;
 
 	i2c_dev->irq_event = platform_get_irq_byname(pdev, "event");
-	if (i2c_dev->irq_event < 0) {
+	if (i2c_dev->irq_event <= 0) {
 		if (i2c_dev->irq_event != -EPROBE_DEFER)
 			dev_err(&pdev->dev, "Failed to get IRQ event: %d\n",
 				i2c_dev->irq_event);
-		return i2c_dev->irq_event;
+		return i2c_dev->irq_event ? : -ENOENT;
 	}
 
 	irq_error = platform_get_irq_byname(pdev, "error");
-	if (irq_error < 0) {
+	if (irq_error <= 0) {
 		if (irq_error != -EPROBE_DEFER)
 			dev_err(&pdev->dev, "Failed to get IRQ error: %d\n",
 				irq_error);
-		return irq_error;
+		return irq_error ? : -ENOENT;
 	}
 
 	i2c_dev->irq_wakeup = platform_get_irq_byname(pdev, "wakeup");
@@ -2072,7 +2080,7 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
 	if (i2c_dev->irq_wakeup > 0) {
 		ret = stm32f7_i2c_setup_wakeup(i2c_dev);
 		if (ret)
-			goto fmp_clear;
+			goto dma_free;
 	}
 
 	platform_set_drvdata(pdev, i2c_dev);
@@ -2107,7 +2115,11 @@ pm_disable:
 	pm_runtime_set_suspended(i2c_dev->dev);
 	pm_runtime_dont_use_autosuspend(i2c_dev->dev);
 
-fmp_clear:
+dma_free:
+	if (i2c_dev->dma) {
+		stm32_i2c_dma_free(i2c_dev->dma);
+		i2c_dev->dma = NULL;
+	}
 	stm32f7_i2c_write_fm_plus_bits(i2c_dev, 0);
 
 clk_free:
@@ -2120,25 +2132,24 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
 {
 	struct stm32f7_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
 
-	if (i2c_dev->dma) {
-		stm32_i2c_dma_free(i2c_dev->dma);
-		i2c_dev->dma = NULL;
-	}
-
 	i2c_del_adapter(&i2c_dev->adap);
 	pm_runtime_get_sync(i2c_dev->dev);
 
-	stm32f7_i2c_write_fm_plus_bits(i2c_dev, 0);
-
 	dev_pm_clear_wake_irq(i2c_dev->dev);
 	device_init_wakeup(i2c_dev->dev, false);
-
-	clk_disable_unprepare(i2c_dev->clk);
 
 	pm_runtime_put_noidle(i2c_dev->dev);
 	pm_runtime_disable(i2c_dev->dev);
 	pm_runtime_set_suspended(i2c_dev->dev);
 	pm_runtime_dont_use_autosuspend(i2c_dev->dev);
+
+	if (i2c_dev->dma) {
+		stm32_i2c_dma_free(i2c_dev->dma);
+		i2c_dev->dma = NULL;
+	}
+	stm32f7_i2c_write_fm_plus_bits(i2c_dev, 0);
+
+	clk_disable_unprepare(i2c_dev->clk);
 
 	return 0;
 }
@@ -2252,6 +2263,10 @@ static int stm32f7_i2c_suspend(struct device *dev)
 	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
 	int ret;
 
+	i2c_lock_bus(&i2c_dev->adap, I2C_LOCK_ROOT_ADAPTER);
+	i2c_dev->is_suspended = true;
+	i2c_unlock_bus(&i2c_dev->adap, I2C_LOCK_ROOT_ADAPTER);
+
 	ret = stm32f7_i2c_regs_backup(i2c_dev);
 	if (ret < 0)
 		return ret;
@@ -2279,6 +2294,10 @@ static int stm32f7_i2c_resume(struct device *dev)
 	ret = stm32f7_i2c_regs_restore(i2c_dev);
 	if (ret < 0)
 		return ret;
+
+	i2c_lock_bus(&i2c_dev->adap, I2C_LOCK_ROOT_ADAPTER);
+	i2c_dev->is_suspended = false;
+	i2c_unlock_bus(&i2c_dev->adap, I2C_LOCK_ROOT_ADAPTER);
 
 	return 0;
 }
