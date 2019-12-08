@@ -1,0 +1,374 @@
+/*
+   EAX Labs, portable K
+ */
+
+/dts-v1/;
+
+#include "stm32mp157c.dtsi"
+#include "stm32mp157c-m4-srm.dtsi"
+#include "stm32mp157cac-pinctrl.dtsi"
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/mfd/st,stpmic1.h>
+
+/ {
+	model = "Metralight portable revK";
+	compatible = "st,stm32mp157a-dk1", "st,stm32mp157";
+
+	aliases {
+		serial0 = &usart1;
+	};
+
+	cpus {
+		psci {
+			compatible = "arm,psci-1.0";
+			method = "none";
+		};
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+		bootargs = "ignore_loglevel clk_ignore_unused earlyprintk exarlycon console=ttySTM0,115200n8 debug_boot_weak_hash init=/bin/init rdinit=/bin/init dyndbg=\"module armmmci +p; module mmc_core +p\"";
+		linux,initrd-start = <0xcd100000>; 
+		linux,initrd-end   = <0xcd20ced5>;
+	};
+
+	memory@c0000000 {
+		device_type = "memory";
+		reg = <0xc0000000 0x08000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		retram: retram@0x38000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x38000000 0x10000>;
+			no-map;
+		};
+
+		mcuram: mcuram@0x30000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x30000000 0x40000>;
+			no-map;
+		};
+
+		mcuram2: mcuram2@0x10000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x10000000 0x40000>;
+			no-map;
+		};
+
+		vdev0vring0: vdev0vring0@10040000 {
+			compatible = "shared-dma-pool";
+			reg = <0x10040000 0x2000>;
+			no-map;
+		};
+
+		vdev0vring1: vdev0vring1@10042000 {
+			compatible = "shared-dma-pool";
+			reg = <0x10042000 0x2000>;
+			no-map;
+		};
+
+		vdev0buffer: vdev0buffer@10044000 {
+			compatible = "shared-dma-pool";
+			reg = <0x10044000 0x4000>;
+			no-map;
+		};
+
+		gpu_reserved: gpu@d4000000 {
+			reg = <0xd4000000 0x1000000>;
+			no-map;
+		};
+	};
+
+	sram: sram@10050000 {
+		compatible = "mmio-sram";
+		reg = <0x10050000 0x10000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0 0x10050000 0x10000>;
+
+		dma_pool: dma_pool@0 {
+			reg = <0x0 0x10000>;
+			pool;
+		};
+	};
+
+	led {
+		compatible = "gpio-leds";
+		blue {
+			label = "heartbeat";
+			gpios = <&gpioa 13 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "heartbeat";
+			default-state = "off";
+		};
+	};
+
+	usb_phy_tuning: usb-phy-tuning {
+		st,hs-dc-level = <2>;
+		st,fs-rftime-tuning;
+		st,hs-rftime-reduction;
+		st,hs-current-trim = <15>;
+		st,hs-impedance-trim = <1>;
+		st,squelch-level = <3>;
+		st,hs-rx-offset = <2>;
+		st,no-lsfs-sc;
+	};
+
+//	wifi_pwrseq: wifi_pwrseq {
+//		compatible = "mmc-pwrseq-simple";
+//		reset-gpios = <&gpioc 7 GPIO_ACTIVE_LOW>,<&gpiod 3 GPIO_ACTIVE_LOW>;
+//	};
+
+};
+
+&pinctrl {
+//	perst_1 {
+//		gpio-hog;
+//		gpios = <&gpioc 7 GPIO_ACTIVE_HIGH>, <&gpiod 3 GPIO_ACTIVE_HIGH>;
+//		output-high;
+//		line-name = "wifi_pwr";
+//	};
+	usart1_pins_a: usart1-0 {
+		pins1 {
+			pinmux = <STM32_PINMUX('G', 11, AF4)>; /* TX */
+			bias-disable;
+			drive-push-pull;
+			slew-rate = <0>;
+		};
+		pins2 {
+			pinmux = <STM32_PINMUX('B', 2, AF4)>; /* RX */
+			bias-disable;
+		};
+	};
+	spi3_pins_a: spi3-0 {
+		pins1 {
+			pinmux = <STM32_PINMUX('C', 10, AF6)>, /* SPI3_SCK */
+				 <STM32_PINMUX('C', 12, AF6)>; /* SPI3_MOSI */
+
+			bias-disable;
+			drive-push-pull;
+			slew-rate = <1>;
+		};
+
+		pins2 {
+			pinmux = <STM32_PINMUX('C', 11, AF6)>; /* SPI3_MISO */
+			bias-disable;
+		};
+	};
+};
+
+&spi3 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi3_pins_a>;
+	cs-gpios = <&gpioc 9 GPIO_ACTIVE_LOW>;
+	wilc_sdio@0 {
+		compatible = "microchip,wilc1000", "microchip,wilc1000-spi";
+		irq-gpios = <&gpioc 6 GPIO_ACTIVE_HIGH>;
+		chip_en-gpios = <&gpiod 3 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpioc 7 GPIO_ACTIVE_HIGH>;
+		status = "okay";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+	};
+};
+
+&qspi {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&qspi_clk_pins_a>, <&qspi_bk1_pins_a>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	flash@0 {
+		compatible = "jedec,spi-nor";   /* let it auto-detect the flash */
+		reg = <0>;
+		spi-max-frequency = <80000000>;
+
+		partitions {
+			 compatible = "fixed-partitions";
+			 #address-cells = <1>;
+			 #size-cells = <1>;
+
+			partition@000000 {
+				label ="boot";
+				reg = <0x0000000 0x40000>; /* 256k bootldr */
+			};
+			partition@000001 {
+				label ="dtb";
+				reg = <0x0040000 0x40000>; /* 256k dtb */
+			};
+			partition@010000 {
+				label ="kernel";
+				reg = <0x0100000 0x300000>; /* 3M kernel */
+			};
+			partition@400000 {
+				label ="rfs";
+				reg = <0x0200000 0x600000>; /* 12M rfs */
+			};
+			partition@800000 {
+				label ="jffs";
+				reg = <0x1000000 0x1000000>; 
+			};
+		};
+	};
+};
+
+&sdmmc1 {
+	pinctrl-names = "default", "opendrain", "sleep";
+	pinctrl-0 = <&sdmmc1_b4_pins_a>;
+	pinctrl-1 = <&sdmmc1_b4_od_pins_a>;
+	pinctrl-2 = <&sdmmc1_b4_sleep_pins_a>;
+	non-removable;
+	st,neg-edge;
+	no-sd;
+	no-mmc;
+	no-1-8-v;
+	bus-width = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+//	status = "okay";
+//	mmc-pwrseq = <&wifi_pwrseq>;
+	wilc_sdio@0 {
+		compatible = "microchip,wilc1000-sdio";
+		irq-gpios = <&gpioc 6 GPIO_ACTIVE_HIGH>;
+//		status = "okay";
+		reg = <1>;
+		bus-width = <4>;
+	};
+};
+
+&usbotg_hs {
+//	pinctrl-names = "default";
+//	pinctrl-0 = <&usbotg_hs_pins_a>;
+	phys = <&usbphyc_port1 0>;
+	phy-names = "usb2-phy";
+	status = "okay";
+};
+
+&usbphyc {
+	status = "okay";
+};
+
+//&usbphyc_port0 {
+//	st,phy-tuning = <&usb_phy_tuning>;
+//};
+
+&usbphyc_port1 {
+	st,phy-tuning = <&usb_phy_tuning>;
+};
+#if 0
+&adc {
+	pinctrl-names = "default";
+	pinctrl-0 = <&adc12_ain_pins_a>, <&adc12_usb_pwr_pins_a>;
+	vdd-supply = <&vdd>;
+	vdda-supply = <&vdd>;
+	vref-supply = <&vrefbuf>;
+	status = "disabled";
+	adc1: adc@0 {
+		/*
+		 * Type-C USB_PWR_CC1 & USB_PWR_CC2 on in18 & in19.
+		 * Use at least 5 * RC time, e.g. 5 * (Rp + Rd) * C:
+		 * 5 * (56 + 47kOhms) * 5pF => 2.5us.
+		 * Use arbitrary margin here (e.g. 5µs).
+		 */
+		st,min-sample-time-nsecs = <5000>;
+		/* AIN connector, USB Type-C CC1 & CC2 */
+		st,adc-channels = <0 1 6 13 18 19>;
+		status = "okay";
+	};
+	adc2: adc@100 {
+		/* AIN connector, temp sensor, USB Type-C CC1 & CC2 */
+		st,adc-channels = <0 1 2 6 12 18 19>;
+		/* temperature sensor min sample time */
+		st,min-sample-time-nsecs = <10000>;
+		status = "okay";
+	};
+	adc_temp: temp {
+		status = "okay";
+	};
+};
+#endif
+&dma1 {
+	sram = <&dma_pool>;
+};
+
+&dma2 {
+	sram = <&dma_pool>;
+};
+
+&dts {
+	status = "okay";
+};
+
+
+//&gpu {
+//	contiguous-area = <&gpu_reserved>;
+//	status = "okay";
+//};
+
+&m4_rproc {
+	memory-region = <&retram>, <&mcuram>, <&mcuram2>, <&vdev0vring0>,
+			<&vdev0vring1>, <&vdev0buffer>;
+	mboxes = <&ipcc 0>, <&ipcc 1>, <&ipcc 2>;
+	mbox-names = "vq0", "vq1", "shutdown";
+	interrupt-parent = <&exti>;
+	interrupts = <68 1>;
+	interrupt-names = "wdg";
+	wakeup-source;
+	recovery;
+	status = "okay";
+};
+
+&pwr {
+			status = "okay";
+//	pwr-regulators {
+//		vdd-supply = <&vdd>;
+//		vdd_3v3_usbfs-supply = <&vdd_usb>;
+//	};
+};
+
+&rng1 {
+	status = "okay";
+};
+
+&rtc {
+	status = "okay";
+};
+
+&usart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&usart1_pins_a>;
+	status = "okay";
+};
+#if 0
+&usbotg_hs {
+	extcon = <&typec>;
+	phys = <&usbphyc_port1 0>;
+	phy-names = "usb2-phy";
+	status = "okay";
+};
+
+&usbphyc {
+	vdd3v3-supply = <&vdd_usb>;
+	status = "okay";
+};
+
+&usbphyc_port0 {
+	st,phy-tuning = <&usb_phy_tuning>;
+};
+
+&usbphyc_port1 {
+	st,phy-tuning = <&usb_phy_tuning>;
+};
+
+&vrefbuf {
+	regulator-min-microvolt = <2500000>;
+	regulator-max-microvolt = <2500000>;
+	vdda-supply = <&vdd>;
+	status = "okay";
+};
+#endif
