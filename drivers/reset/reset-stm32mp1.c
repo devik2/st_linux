@@ -11,9 +11,12 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
+#include <linux/reboot.h>
+#include <linux/delay.h>
 
 #define CLR_OFFSET 0x4
 
+#define RCC_MP_GRSTCSETR 0x404
 #define STM32_RCC_TZCR 0x0
 #define CLR_OFFSET 0x4
 
@@ -26,6 +29,7 @@
 struct stm32_reset_data {
 	struct reset_controller_dev	rcdev;
 	void __iomem			*membase;
+	struct notifier_block reset_nb;
 };
 
 static int soc_secured;
@@ -125,6 +129,21 @@ static const struct of_device_id stm32_reset_dt_ids[] = {
 	{ /* sentinel */ },
 };
 
+static int stm32_reset_by_rcc(struct notifier_block *this,
+			    unsigned long mode, void *cmd)
+{
+	struct stm32_reset_data *rdata = container_of(this,
+					struct stm32_reset_data, reset_nb);
+	if (!soc_secured) {
+		/* nonsecure system reboot, in secure mode, reboot is
+		   expected to go thru PSCI */
+		pr_info("Reseting by RCC MPSYSRST\n");
+		udelay(2000);
+		*(u32*)(rdata->membase + RCC_MP_GRSTCSETR) = 1; 
+	}
+	return NOTIFY_DONE;
+}
+
 static int stm32_reset_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -135,6 +154,10 @@ static int stm32_reset_probe(struct platform_device *pdev)
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
+
+	data->reset_nb.notifier_call = stm32_reset_by_rcc;
+	data->reset_nb.priority = 120;
+	register_restart_handler(&data->reset_nb);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	membase = devm_ioremap_resource(dev, res);
