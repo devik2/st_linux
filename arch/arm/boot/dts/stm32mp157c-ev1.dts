@@ -649,7 +649,7 @@
 &spdifrx {
 	pinctrl-names = "default", "sleep";
 	pinctrl-0 = <&spdifrx_pins_a>;
-	pinctrl-1 = <&spdifrx_sleep_pins_a>;
+	pinctrl-1 = <&spdifrx_pins_a>;
 	status = "okay";
 
 	spdifrx_port: port {
@@ -717,6 +717,7 @@
 	pinctrl-0 = <&usart3_pins_a>;
 	pinctrl-1 = <&usart3_sleep_pins_a>;
 	pinctrl-2 = <&usart3_idle_pins_a>;
+	st,hw-flow-ctrl;
 	status = "disabled";
 };
 
