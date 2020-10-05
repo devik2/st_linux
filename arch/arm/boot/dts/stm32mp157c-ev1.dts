@@ -350,7 +350,7 @@
 };
 
 &usbh_ehci {
-	phys = <&usbphyc_port0>;
+	phys = <&usbphyc_port1>;
 	status = "okay";
 };
 
@@ -359,7 +359,7 @@
 	pinctrl-names = "default";
 	phys = <&usbphyc_port1 0>;
 	phy-names = "usb2-phy";
-	status = "okay";
+	//status = "okay";
 };
 
 &usbphyc {

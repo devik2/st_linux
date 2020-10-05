@@ -1735,7 +1735,8 @@ static void dwc2_hcd_cleanup_channels(struct dwc2_hsotg *hsotg)
 		 * release_channel_ddma(), which is called from ep_disable when
 		 * device disconnects
 		 */
-		channel->qh = NULL;
+		if (hsotg->params.host_dma && hsotg->params.dma_desc_enable)
+			channel->qh = NULL;
 	}
 	/* All channels have been freed, mark them available */
 	if (hsotg->params.uframe_sched) {
@@ -2824,7 +2825,7 @@ static int dwc2_queue_transaction(struct dwc2_hsotg *hsotg,
 		list_move_tail(&chan->split_order_list_entry,
 			       &hsotg->split_order);
 
-	if (hsotg->params.host_dma && chan->qh) {
+	if (hsotg->params.host_dma) {
 		if (hsotg->params.dma_desc_enable) {
 			if (!chan->xfer_started ||
 			    chan->ep_type == USB_ENDPOINT_XFER_ISOC) {
@@ -3611,7 +3612,8 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
 		if (wvalue != USB_PORT_FEAT_TEST && (!windex || windex > 1))
 			goto error;
 
-		if (!hsotg->flags.b.port_connect_status) {
+		if (!hsotg->flags.b.port_connect_status &&
+		    !dwc2_is_host_mode(hsotg)) {
 			/*
 			 * The port is disconnected, which means the core is
 			 * either in device mode or it soon will be. Just

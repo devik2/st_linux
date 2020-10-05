@@ -1646,8 +1646,7 @@ static int dwc2_hsotg_process_req_status(struct dwc2_hsotg *hsotg,
 
 	switch (ctrl->bRequestType & USB_RECIP_MASK) {
 	case USB_RECIP_DEVICE:
-		status = hsotg->gadget.is_selfpowered <<
-			 USB_DEVICE_SELF_POWERED;
+		status = 1 << USB_DEVICE_SELF_POWERED;
 		status |= hsotg->remote_wakeup_allowed <<
 			  USB_DEVICE_REMOTE_WAKEUP;
 		reply = cpu_to_le16(status);
@@ -3532,7 +3531,7 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
 		dwc2_readl(hsotg, DOEPCTL0));
 }
 
-static void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
+void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
 {
 	/* set the soft-disconnect bit */
 	dwc2_set_bit(hsotg, DCTL, DCTL_SFTDISCON);
@@ -3541,7 +3540,8 @@ static void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
 void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg)
 {
 	/* remove the soft-disconnect and let's go */
-	dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
+	if (!hsotg->role_sw || (dwc2_readl(hsotg, GOTGCTL) & GOTGCTL_BSESVLD))
+		dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
 }
 
 /**
@@ -3791,25 +3791,14 @@ irq_retry:
 		for (idx = 1; idx < hsotg->num_of_eps; idx++) {
 			hs_ep = hsotg->eps_out[idx];
 			/* Proceed only unmasked ISOC EPs */
-			if (BIT(idx) & ~daintmsk)
+			if ((BIT(idx) & ~daintmsk) || !hs_ep->isochronous)
 				continue;
 
 			epctrl = dwc2_readl(hsotg, DOEPCTL(idx));
 
-			//ISOC Ep's only
-			if ((epctrl & DXEPCTL_EPENA) && hs_ep->isochronous) {
+			if (epctrl & DXEPCTL_EPENA) {
 				epctrl |= DXEPCTL_SNAK;
 				epctrl |= DXEPCTL_EPDIS;
-				dwc2_writel(hsotg, epctrl, DOEPCTL(idx));
-				continue;
-			}
-
-			//Non-ISOC EP's
-			if (hs_ep->halted) {
-				if (!(epctrl & DXEPCTL_EPENA))
-					epctrl |= DXEPCTL_EPENA;
-				epctrl |= DXEPCTL_EPDIS;
-				epctrl |= DXEPCTL_STALL;
 				dwc2_writel(hsotg, epctrl, DOEPCTL(idx));
 			}
 		}
@@ -4329,20 +4318,19 @@ static int dwc2_hsotg_ep_sethalt(struct usb_ep *ep, int value, bool now)
 		epctl = dwc2_readl(hs, epreg);
 
 		if (value) {
-			if (!(dwc2_readl(hs, GINTSTS) & GINTSTS_GOUTNAKEFF))
-				dwc2_set_bit(hs, DCTL, DCTL_SGOUTNAK);
-			// STALL bit will be set in GOUTNAKEFF interrupt handler
+			epctl |= DXEPCTL_STALL;
 		} else {
 			epctl &= ~DXEPCTL_STALL;
 			xfertype = epctl & DXEPCTL_EPTYPE_MASK;
 			if (xfertype == DXEPCTL_EPTYPE_BULK ||
 			    xfertype == DXEPCTL_EPTYPE_INTERRUPT)
 				epctl |= DXEPCTL_SETD0PID;
-			dwc2_writel(hs, epctl, epreg);
 		}
+		dwc2_writel(hs, epctl, epreg);
 	}
 
 	hs_ep->halted = value;
+
 	return 0;
 }
 
@@ -4529,26 +4517,6 @@ static int dwc2_hsotg_gadget_getframe(struct usb_gadget *gadget)
 }
 
 /**
- * dwc2_hsotg_set_selfpowered - set if device is self/bus powered
- * @gadget: The usb gadget state
- * @is_selfpowered: Whether the device is self-powered
- *
- * Set if the device is self or bus powered.
- */
-static int dwc2_hsotg_set_selfpowered(struct usb_gadget *gadget,
-				      int is_selfpowered)
-{
-	struct dwc2_hsotg *hsotg = to_hsotg(gadget);
-	unsigned long flags;
-
-	spin_lock_irqsave(&hsotg->lock, flags);
-	gadget->is_selfpowered = !!is_selfpowered;
-	spin_unlock_irqrestore(&hsotg->lock, flags);
-
-	return 0;
-}
-
-/**
  * dwc2_hsotg_pullup - connect/disconnect the USB PHY
  * @gadget: The usb gadget state
  * @is_on: Current state of the USB PHY
@@ -4639,7 +4607,6 @@ static int dwc2_hsotg_vbus_draw(struct usb_gadget *gadget, unsigned int mA)
 
 static const struct usb_gadget_ops dwc2_hsotg_gadget_ops = {
 	.get_frame	= dwc2_hsotg_gadget_getframe,
-	.set_selfpowered	= dwc2_hsotg_set_selfpowered,
 	.udc_start		= dwc2_hsotg_udc_start,
 	.udc_stop		= dwc2_hsotg_udc_stop,
 	.pullup                 = dwc2_hsotg_pullup,
@@ -4958,7 +4925,7 @@ int dwc2_hsotg_suspend(struct dwc2_hsotg *hsotg)
 		hsotg->gadget.speed = USB_SPEED_UNKNOWN;
 		spin_unlock_irqrestore(&hsotg->lock, flags);
 
-		for (ep = 0; ep < hsotg->num_of_eps; ep++) {
+		for (ep = 1; ep < hsotg->num_of_eps; ep++) {
 			if (hsotg->eps_in[ep])
 				dwc2_hsotg_ep_disable_lock(&hsotg->eps_in[ep]->ep);
 			if (hsotg->eps_out[ep])

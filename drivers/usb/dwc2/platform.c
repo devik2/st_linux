@@ -285,9 +285,7 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 	ret = devm_regulator_bulk_get(hsotg->dev, ARRAY_SIZE(hsotg->supplies),
 				      hsotg->supplies);
 	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(hsotg->dev, "failed to request supplies: %d\n",
-				ret);
+		dev_err(hsotg->dev, "failed to request supplies: %d\n", ret);
 		return ret;
 	}
 	return 0;
@@ -313,6 +311,8 @@ static int dwc2_driver_remove(struct platform_device *dev)
 		dwc2_hcd_remove(hsotg);
 	if (hsotg->gadget_enabled)
 		dwc2_hsotg_remove(hsotg);
+
+	dwc2_drd_exit(hsotg);
 
 	if (hsotg->params.activate_stm_id_vb_detection)
 		regulator_disable(hsotg->usb33d);
@@ -342,7 +342,8 @@ static void dwc2_driver_shutdown(struct platform_device *dev)
 {
 	struct dwc2_hsotg *hsotg = platform_get_drvdata(dev);
 
-	disable_irq(hsotg->irq);
+	dwc2_disable_global_interrupts(hsotg);
+	synchronize_irq(hsotg->irq);
 }
 
 /**
@@ -397,7 +398,8 @@ static int dwc2_driver_probe(struct platform_device *dev)
 		return retval;
 	}
 
-	hsotg->regs = devm_platform_get_and_ioremap_resource(dev, 0, &res);
+	res = platform_get_resource(dev, IORESOURCE_MEM, 0);
+	hsotg->regs = devm_ioremap_resource(&dev->dev, res);
 	if (IS_ERR(hsotg->regs))
 		return PTR_ERR(hsotg->regs);
 
@@ -474,16 +476,14 @@ static int dwc2_driver_probe(struct platform_device *dev)
 		hsotg->usb33d = devm_regulator_get(hsotg->dev, "usb33d");
 		if (IS_ERR(hsotg->usb33d)) {
 			retval = PTR_ERR(hsotg->usb33d);
-			if (retval != -EPROBE_DEFER)
-				dev_err(hsotg->dev,
-					"failed to request usb33d supply: %d\n",
-					retval);
+			dev_err(hsotg->dev,
+				"can't get voltage level detector supply\n");
 			goto error;
 		}
 		retval = regulator_enable(hsotg->usb33d);
 		if (retval) {
 			dev_err(hsotg->dev,
-				"failed to enable usb33d supply: %d\n", retval);
+				"can't enable voltage level detector supply\n");
 			goto error;
 		}
 
@@ -493,10 +493,17 @@ static int dwc2_driver_probe(struct platform_device *dev)
 		dwc2_writel(hsotg, ggpio, GGPIO);
 	}
 
+	retval = dwc2_drd_init(hsotg);
+	if (retval) {
+		if (retval != -EPROBE_DEFER)
+			dev_err(hsotg->dev, "failed to initialize dual-role\n");
+		goto error_init;
+	}
+
 	if (hsotg->dr_mode != USB_DR_MODE_HOST) {
 		retval = dwc2_gadget_init(hsotg);
 		if (retval)
-			goto error_init;
+			goto error_drd;
 		hsotg->gadget_enabled = 1;
 	}
 
@@ -522,7 +529,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
 		if (retval) {
 			if (hsotg->gadget_enabled)
 				dwc2_hsotg_remove(hsotg);
-			goto error_init;
+			goto error_drd;
 		}
 		hsotg->hcd_enabled = 1;
 	}
@@ -543,12 +550,14 @@ static int dwc2_driver_probe(struct platform_device *dev)
 		retval = usb_add_gadget_udc(hsotg->dev, &hsotg->gadget);
 		if (retval) {
 			dwc2_hsotg_remove(hsotg);
-			goto error_init;
+			goto error;
 		}
 	}
 #endif /* CONFIG_USB_DWC2_PERIPHERAL || CONFIG_USB_DWC2_DUAL_ROLE */
 	return 0;
 
+error_drd:
+	dwc2_drd_exit(hsotg);
 error_init:
 	if (hsotg->params.activate_stm_id_vb_detection)
 		regulator_disable(hsotg->usb33d);
@@ -565,6 +574,21 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
 
 	if (is_device_mode)
 		dwc2_hsotg_suspend(dwc2);
+
+	dwc2_drd_suspend(dwc2);
+
+	if (dwc2->params.power_down == DWC2_POWER_DOWN_PARAM_NONE) {
+		/*
+		 * Backup host registers when power_down param is 'none', if
+		 * controller power is disabled.
+		 * This shouldn't be needed, when using other power_down modes.
+		 */
+		ret = dwc2_backup_registers(dwc2);
+		if (ret) {
+			dev_err(dwc2->dev, "backup regs failed %d\n", ret);
+			return ret;
+		}
+	}
 
 	if (dwc2->params.activate_stm_id_vb_detection) {
 		unsigned long flags;
@@ -603,6 +627,9 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
 		dwc2->phy_off_for_suspend = true;
 	}
 
+	if (device_may_wakeup(dev) || device_wakeup_path(dev))
+		enable_irq_wake(dwc2->irq);
+
 	return ret;
 }
 
@@ -610,6 +637,9 @@ static int __maybe_unused dwc2_resume(struct device *dev)
 {
 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
 	int ret = 0;
+
+	if (device_may_wakeup(dev) || device_wakeup_path(dev))
+		disable_irq_wake(dwc2->irq);
 
 	if (dwc2->phy_off_for_suspend && dwc2->ll_hw_enabled) {
 		ret = __dwc2_lowlevel_hw_enable(dwc2);
@@ -643,8 +673,15 @@ static int __maybe_unused dwc2_resume(struct device *dev)
 		spin_unlock_irqrestore(&dwc2->lock, flags);
 	}
 
-	/* Need to restore FORCEDEVMODE/FORCEHOSTMODE */
-	dwc2_force_dr_mode(dwc2);
+	if (dwc2->params.power_down == DWC2_POWER_DOWN_PARAM_NONE) {
+		ret = dwc2_restore_registers(dwc2);
+		if (ret) {
+			dev_err(dwc2->dev, "restore regs failed %d\n", ret);
+			return ret;
+		}
+	}
+
+	dwc2_drd_resume(dwc2);
 
 	if (dwc2_is_device_mode(dwc2))
 		ret = dwc2_hsotg_resume(dwc2);
