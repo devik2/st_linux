@@ -256,6 +256,11 @@ struct stm32_usart_info stm32h7_info = {
 #define RX_BUF_P RX_BUF_L	 /* dma rx buffer period     */
 #define TX_BUF_L 200		 /* dma tx buffer length     */
 
+/* define which bits can't be changed with UE=1 */
+#define CR1_RESTRICTED 0xf3ff9e00
+#define CR2_RESTRICTED 0xff7fffff
+#define CR3_RESTRICTED 0x003ffbfe
+
 struct stm32_port {
 	struct uart_port port;
 	struct clk *clk;
