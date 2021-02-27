@@ -147,3 +147,13 @@ x509.genkey
 
 # Clang's compilation database file
 /compile_commands.json
+
+mkdtb.sh
+mod_inst
+arch/arm/boot/compressed/fdt.h
+arch/arm/boot/compressed/libfdt.h
+arch/arm/boot/compressed/libfdt_internal.h
+arch/arm/boot/release
+drivers/usb/dwc2/drd.c
+scripts/conmakehash
+scripts/sortextable
