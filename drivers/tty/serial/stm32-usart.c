@@ -882,6 +882,7 @@ static void stm32_usart_set_termios(struct uart_port *port,
 	}
 
 	cr1_old  = readl_relaxed(port->membase + ofs->cr1);
+	cr1 |= cr1_old & BIT(cfg->uart_enable_bit);
 	cr2_old  = readl_relaxed(port->membase + ofs->cr2);
 	cr3_old  = readl_relaxed(port->membase + ofs->cr3);
 	cr3 |= cr3_old & (USART_CR3_TXFTIE | USART_CR3_RXFTCFG_MASK
