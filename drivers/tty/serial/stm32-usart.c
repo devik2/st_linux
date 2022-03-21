@@ -734,12 +734,10 @@ static void stm32_usart_set_termios(struct uart_port *port,
 	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
 	const struct stm32_usart_config *cfg = &stm32_port->info->cfg;
 	struct serial_rs485 *rs485conf = &port->rs485;
-	unsigned int baud, bits, stop_needed;
+	unsigned int baud, bits;
 	u32 usartdiv, mantissa, fraction, oversampling;
 	tcflag_t cflag = termios->c_cflag;
-	u32 cr1, cr2, cr3, brr;
-	u32 cr1_old, cr2_old, cr3_old, brr_old;
-	u32 rtor = 0;
+	u32 cr1, cr2, cr3;
 	unsigned long flags;
 
 	if (!stm32_port->hw_flow_control)
@@ -749,10 +747,21 @@ static void stm32_usart_set_termios(struct uart_port *port,
 
 	spin_lock_irqsave(&port->lock, flags);
 
+	/* Stop serial port and reset value */
+	writel_relaxed(0, port->membase + ofs->cr1);
+
+	/* flush RX & TX FIFO */
+	if (ofs->rqr != UNDEF_REG)
+		stm32_usart_set_bits(port, ofs->rqr,
+				     USART_RQR_TXFRQ | USART_RQR_RXFRQ);
+
 	cr1 = USART_CR1_TE | USART_CR1_RE;
 	if (stm32_port->fifoen)
 		cr1 |= USART_CR1_FIFOEN;
 	cr2 = stm32_port->swap ? USART_CR2_SWAP : 0;
+	cr3 = readl_relaxed(port->membase + ofs->cr3);
+	cr3 &= USART_CR3_TXFTIE | USART_CR3_RXFTCFG_MASK | USART_CR3_RXFTIE
+		| USART_CR3_TXFTCFG_MASK;
 
 	if (cflag & CSTOPB)
 		cr2 |= USART_CR2_STOP_2B;
@@ -789,7 +798,7 @@ static void stm32_usart_set_termios(struct uart_port *port,
 
 		/* RX timeout irq to occur after last stop bit + bits */
 		stm32_port->cr1_irq = USART_CR1_RTOIE;
-		rtor = bits;
+		writel_relaxed(bits, port->membase + ofs->rtor);
 		cr2 |= USART_CR2_RTOEN;
 		/* Not using dma, enable fifo threshold irq */
 		if (!stm32_port->rx_ch)
@@ -797,7 +806,7 @@ static void stm32_usart_set_termios(struct uart_port *port,
 	}
 
 	cr1 |= stm32_port->cr1_irq;
-	cr3 = stm32_port->cr3_irq;
+	cr3 |= stm32_port->cr3_irq;
 
 	if (cflag & PARODD)
 		cr1 |= USART_CR1_PS;
@@ -825,14 +834,16 @@ static void stm32_usart_set_termios(struct uart_port *port,
 	if (usartdiv < 16) {
 		oversampling = 8;
 		cr1 |= USART_CR1_OVER8;
+		stm32_usart_set_bits(port, ofs->cr1, USART_CR1_OVER8);
 	} else {
 		oversampling = 16;
 		cr1 &= ~USART_CR1_OVER8;
+		stm32_usart_clr_bits(port, ofs->cr1, USART_CR1_OVER8);
 	}
 
 	mantissa = (usartdiv / oversampling) << USART_BRR_DIV_M_SHIFT;
 	fraction = usartdiv % oversampling;
-	brr = mantissa | fraction;
+	writel_relaxed(mantissa | fraction, port->membase + ofs->brr);
 
 	uart_update_timeout(port, cflag, baud);
 
@@ -881,41 +892,11 @@ static void stm32_usart_set_termios(struct uart_port *port,
 		cr1 &= ~(USART_CR1_DEDT_MASK | USART_CR1_DEAT_MASK);
 	}
 
-	cr1_old  = readl_relaxed(port->membase + ofs->cr1);
-	cr2_old  = readl_relaxed(port->membase + ofs->cr2);
-	cr3_old  = readl_relaxed(port->membase + ofs->cr3);
-	cr3 |= cr3_old & (USART_CR3_TXFTIE | USART_CR3_RXFTCFG_MASK
-		| USART_CR3_RXFTIE | USART_CR3_TXFTCFG_MASK);
-	brr_old  = readl_relaxed(port->membase + ofs->brr);
-
-	/* If only changes are in dynamic bits (can be set with UE=1)
-	   we can write them without stopping the USART */
-	stop_needed = brr_old != brr
-		|| ((cr1_old ^ cr1) & CR1_RESTRICTED)
-		|| ((cr2_old ^ cr2) & CR2_RESTRICTED)
-		|| ((cr3_old ^ cr3) & CR3_RESTRICTED);
-
-	if (stop_needed) {
-		/* Stop serial port and reset value */
-		writel_relaxed(0, port->membase + ofs->cr1);
-		cr1 &= ~BIT(cfg->uart_enable_bit);
-
-		/* flush RX & TX FIFO */
-		if (ofs->rqr != UNDEF_REG)
-			writel_relaxed(USART_RQR_TXFRQ | USART_RQR_RXFRQ,
-					port->membase + ofs->rqr);
-	}
-
-	if (ofs->rtor != UNDEF_REG)
-		writel_relaxed(rtor,port->membase + ofs->rtor);
 	writel_relaxed(cr3, port->membase + ofs->cr3);
 	writel_relaxed(cr2, port->membase + ofs->cr2);
 	writel_relaxed(cr1, port->membase + ofs->cr1);
-	writel_relaxed(brr, port->membase + ofs->brr);
 
-	if (stop_needed)
-		stm32_usart_set_bits(port, ofs->cr1,
-				BIT(cfg->uart_enable_bit));
+	stm32_usart_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
 	spin_unlock_irqrestore(&port->lock, flags);
 }
 
